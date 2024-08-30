@@ -3,3 +3,9 @@ variable "project" {
   type        = string
   default     = null
 }
+
+variable "region" {
+  description = "The region of the project in which the resource belongs"
+  type        = string
+  default     = null
+}

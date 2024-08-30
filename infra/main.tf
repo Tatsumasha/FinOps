@@ -1,8 +1,36 @@
 provider "google" {
-  project = "practica-cloud-286009"
-  region  = "eu-west1"
+  project = var.project
+  region  = var.region
 }
 
+
+resource "google_billing_budget" "budget_example" {
+  billing_account = "016024-142CBD-3C523A"
+
+  display_name = "FinOps Budget"
+
+  amount {
+    specified_amount {
+      currency_code = "EUR"
+      units         = 100 
+    }
+  }
+  budget_filter {
+    projects = ["projects/${var.project}"]
+  }
+
+  threshold_rules {
+    threshold_percent = 0.5  # Notificar al 50% del presupuesto
+  }
+
+  threshold_rules {
+    threshold_percent = 0.9  # Notificar al 90% del presupuesto
+  }
+
+  threshold_rules {
+    threshold_percent = 1.0  # Notificar al 100% del presupuesto
+  }
+}
 resource "google_pubsub_topic" "topic" {
   name = "finops-topic"
 }
@@ -21,6 +49,7 @@ resource "google_monitoring_notification_channel" "pubsub_notification_channel" 
 resource "google_storage_bucket" "bucket" {
   name     = "finops-cfcode-bucket"
   location = "EU"
+  force_destroy = true
 }
 
 resource "google_storage_bucket_object" "daily_report_code" {
@@ -143,7 +172,7 @@ resource "google_cloud_scheduler_job" "http_job" {
   name        = "finops-daily-report-trigger"
   description = "Job de Cloud Scheduler que hace una llamada HTTP al endpoint de la cloud function daily_report"
 
-  schedule = "0 0 * * *"
+  schedule = "0 7 * * *"
   time_zone = "Europe/London"
 
   region = "europe-west1"
@@ -168,7 +197,7 @@ resource "google_cloud_scheduler_job" "http_job" {
 
 resource "google_monitoring_alert_policy" "alert_policy" {
   project      = var.project
-  display_name = "CPU Utilization > 50%"
+  display_name = "CPU Utilization < 50%"
   documentation {
     content = "The $${metric.display_name} of the $${resource.type} $${resource.label.instance_id} in $${resource.project} has exceeded 50% for over 1 minute."
   }
@@ -176,7 +205,7 @@ resource "google_monitoring_alert_policy" "alert_policy" {
   conditions {
     display_name = "Condition 1"
     condition_threshold {
-      comparison      = "COMPARISON_GT"
+      comparison      = "COMPARISON_LT"
       duration        = "60s"
       filter          = "resource.type = \"gce_instance\" AND metric.type = \"compute.googleapis.com/instance/cpu/utilization\""
       threshold_value = "0.5"
@@ -213,7 +242,7 @@ resource "google_monitoring_alert_policy" "bigquery_alert" {
       filter          = "resource.type = \"bigquery_dataset\" AND metric.type = \"bigquery.googleapis.com/storage/stored_bytes\""
       comparison      = "COMPARISON_GT"
       duration        = "60s"
-      threshold_value = 1000
+      threshold_value = 1000000000
       aggregations {
         alignment_period     = "60s"
         per_series_aligner   = "ALIGN_SUM"
@@ -231,6 +260,10 @@ resource "google_monitoring_alert_policy" "bigquery_alert" {
 
   notification_channels = [google_monitoring_notification_channel.pubsub_notification_channel.name]
   enabled = true
+
+  user_labels = {
+    environment = "production"
+  }
 }
 
 resource "google_monitoring_alert_policy" "bigquery_upload_alert" {
@@ -244,7 +277,7 @@ resource "google_monitoring_alert_policy" "bigquery_upload_alert" {
       filter          = "resource.type = \"bigquery_dataset\" AND metric.type = \"bigquery.googleapis.com/storage/uploaded_bytes\""
       comparison      = "COMPARISON_GT"
       duration        = "60s"
-      threshold_value = 1000
+      threshold_value = 10000000
       aggregations {
         alignment_period     = "60s"
         per_series_aligner   = "ALIGN_SUM"
@@ -262,4 +295,101 @@ resource "google_monitoring_alert_policy" "bigquery_upload_alert" {
 
   notification_channels = [google_monitoring_notification_channel.pubsub_notification_channel.name]
   enabled = true
+
+  user_labels = {
+    environment = "production"
+  }
+}
+
+resource "google_monitoring_alert_policy" "cloud_functions_instance_alert" {
+  display_name = "Cloud Functions Instance Alert"
+
+  combiner = "OR"
+  conditions {
+    display_name = "Cloud Functions Instance Condition"
+
+    condition_threshold {
+      filter = "resource.type=\"cloud_function\" AND metric.type=\"cloudfunctions.googleapis.com/function/execution_count\""
+
+      comparison   = "COMPARISON_GT"
+      threshold_value = 100  
+      duration     = "60s"
+      
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+
+  notification_channels = [google_monitoring_notification_channel.pubsub_notification_channel.name]
+
+  user_labels = {
+    environment = "production"
+  }
+}
+
+# resource "google_monitoring_alert_policy" "job_active_worker_instances_alert" {
+#   display_name = "Job Active Worker Instances Alert"
+
+#   combiner = "OR"
+#   conditions {
+#     display_name = "Active Worker Instances Condition"
+
+#     condition_threshold {
+#       filter = "resource.type=\"dataflow_job\" AND metric.type=\"job/current_num_vcpus\""
+#       comparison = "COMPARISON_GT"
+#       threshold_value = 100
+#       duration = "60s"
+      
+#       aggregations {
+#         alignment_period = "60s"
+#         per_series_aligner = "ALIGN_MAX"
+#       }
+#     }
+#   }
+
+#   notification_channels = [google_monitoring_notification_channel.pubsub_notification_channel.name]
+
+#   documentation {
+#     content  = "Alerta cuando el número de instancias activas de trabajadores supera el límite establecido."
+#     mime_type = "text/markdown"
+#   }
+
+#   user_labels = {
+#     environment = "production"
+#   }
+# }
+
+resource "google_monitoring_alert_policy" "snapshot_backlog_bytes_alert" {
+  display_name = "Snapshot Backlog Bytes Alert"
+
+  combiner = "OR"
+  conditions {
+    display_name = "Snapshot Backlog Bytes Condition"
+
+    condition_threshold {
+      filter = "resource.type=\"pubsub_snapshot\" AND metric.type=\"snapshot/backlog_bytes\""
+      comparison = "COMPARISON_GT"
+      threshold_value = 500000000
+      duration = "60s"
+
+      aggregations {
+        alignment_period = "60s"
+        per_series_aligner = "ALIGN_MAX"
+      }
+    }
+  }
+
+  notification_channels = [google_monitoring_notification_channel.pubsub_notification_channel.name]
+
+  documentation {
+    content  = "Alerta cuando los bytes en cola del snapshot superan el límite establecido."
+    mime_type = "text/markdown"
+  }
+
+  user_labels = {
+    environment = "production"
+  }
 }
